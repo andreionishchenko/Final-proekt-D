@@ -5,8 +5,10 @@ from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenRefreshView,
 )
+from .views import GroupViewSet
 
 router = DefaultRouter()
+router.register(r'groups', GroupViewSet)
 router.register(r'properties', PropertyViewSet)
 router.register(r'bookings', BookingViewSet)
 router.register(r'properties/(?P<property_pk>\d+)/reviews', ReviewViewSet, basename='reviews')

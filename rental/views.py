@@ -8,7 +8,29 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
 from rest_framework.decorators import action
+from django.contrib.auth.models import Group, User
+from .serializers import GroupSerializer, UserSerializer
+from rest_framework import status
 
+
+class GroupViewSet(viewsets.ModelViewSet):
+    queryset = Group.objects.all()
+    serializer_class = GroupSerializer
+
+
+class RegisterView(generics.CreateAPIView):
+    queryset = User.objects.all()
+    serializer_class = UserSerializer
+
+    def perform_create(self, serializer):
+        user = serializer.save()
+        group = self.request.data.get('group')
+        if group:
+            group_instance = Group.objects.get(name=group)
+            user.groups.add(group_instance)
+        else:
+            default_group = Group.objects.get(name='Tenant')  # Группа по умолчанию
+            user.groups.add(default_group)
 
 
 class RegisterView(generics.CreateAPIView):
@@ -116,6 +138,8 @@ class SearchHistoryViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
+
+
 
 class PropertyViewViewSet(viewsets.ModelViewSet):
     queryset = PropertyView.objects.all()
