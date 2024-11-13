@@ -1,16 +1,19 @@
-# rental/views.py
 from rest_framework import viewsets, generics, permissions, filters
 from django_filters.rest_framework import DjangoFilterBackend
 from .models import Property, CustomUser, Booking, Review, SearchHistory, PropertyView
-from .serializers import PropertySerializer, RegisterSerializer, LoginSerializer, BookingSerializer, ReviewSerializer, SearchHistorySerializer, PropertyViewSerializer
+from .serializers import (
+    PropertySerializer, RegisterSerializer, LoginSerializer,
+    BookingSerializer, ReviewSerializer, SearchHistorySerializer,
+    PropertyViewSerializer, GroupSerializer, UserSerializer
+)
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
 from rest_framework.decorators import action
-from django.contrib.auth.models import Group, User
-from .serializers import GroupSerializer, UserSerializer
+from django.contrib.auth.models import Group
 from rest_framework import status
+from django.utils import timezone
+from rest_framework import serializers
 
 
 class GroupViewSet(viewsets.ModelViewSet):
@@ -19,24 +22,19 @@ class GroupViewSet(viewsets.ModelViewSet):
 
 
 class RegisterView(generics.CreateAPIView):
-    queryset = User.objects.all()
-    serializer_class = UserSerializer
-
-    def perform_create(self, serializer):
-        user = serializer.save()
-        group = self.request.data.get('group')
-        if group:
-            group_instance = Group.objects.get(name=group)
-            user.groups.add(group_instance)
-        else:
-            default_group = Group.objects.get(name='Tenant')  # Группа по умолчанию
-            user.groups.add(default_group)
-
-
-class RegisterView(generics.CreateAPIView):
     queryset = CustomUser.objects.all()
     serializer_class = RegisterSerializer
     permission_classes = (permissions.AllowAny,)
+
+    def perform_create(self, serializer):
+        user = serializer.save()
+        group_name = self.request.data.get('group')
+        if group_name:
+            group_instance = Group.objects.get(name=group_name)
+            user.groups.add(group_instance)
+        else:
+            default_group = Group.objects.get(name='Tenant')
+            user.groups.add(default_group)
 
 
 class LoginView(APIView):
@@ -45,11 +43,31 @@ class LoginView(APIView):
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        return Response(serializer.validated_data)
+        user = serializer.validated_data['user']
+        refresh = RefreshToken.for_user(user)
+
+        # Создаем ответ с токенами
+        response = Response({
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
+        })
+
+        # Сохраняем access токен в куки
+        response.set_cookie(
+            key='access_token',
+            value=str(refresh.access_token),
+            httponly=True,  # Защита от доступа через JavaScript
+            secure=False,  # Установите True для HTTPS в production
+            samesite='Lax',  # Защита от CSRF в браузере
+        )
+
+        return response
+
 
 class IsLandlord(permissions.BasePermission):
     def has_permission(self, request, view):
         return request.user and request.user.is_landlord
+
 
 class PropertyViewSet(viewsets.ModelViewSet):
     queryset = Property.objects.all()
@@ -58,13 +76,13 @@ class PropertyViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
 
     filterset_fields = {
-        'price': ['gte', 'lte'],  # Минимальная и максимальная цена
-        'location': ['exact', 'icontains'],  # Точный поиск и поиск по части строки
-        'num_rooms': ['gte', 'lte'],  # Диапазон количества комнат
-        'property_type': ['exact'],  # Тип жилья
+        'price': ['gte', 'lte'],
+        'location': ['exact', 'icontains'],
+        'num_rooms': ['gte', 'lte'],
+        'property_type': ['exact'],
     }
-    search_fields = ['title', 'description']  # Поиск по заголовкам и описаниям
-    ordering_fields = ['price', 'created_at', 'views_count', 'reviews__count']  # Сортировка по цене, дате добавления, количеству просмотров и количеству отзывов
+    search_fields = ['title', 'description']
+    ordering_fields = ['price', 'created_at', 'views_count']
 
     def get_permissions(self):
         if self.action in ['create', 'update', 'partial_update', 'destroy']:
@@ -83,6 +101,7 @@ class PropertyViewSet(viewsets.ModelViewSet):
         property.save()
         PropertyView.objects.create(user=request.user, property=property)
         return Response({'status': 'view count incremented'})
+
 
 class BookingViewSet(viewsets.ModelViewSet):
     queryset = Booking.objects.all()
@@ -104,6 +123,13 @@ class BookingViewSet(viewsets.ModelViewSet):
         return self.queryset.filter(user=self.request.user)
 
     def perform_create(self, serializer):
+        property = serializer.validated_data['property']
+        start_date = serializer.validated_data['start_date']
+        end_date = serializer.validated_data['end_date']
+
+        if Booking.objects.filter(property=property, start_date__lt=end_date, end_date__gt=start_date).exists():
+            raise serializers.ValidationError("The selected dates overlap with an existing booking.")
+
         serializer.save(user=self.request.user)
 
     def update(self, request, *args, **kwargs):
@@ -116,6 +142,7 @@ class BookingViewSet(viewsets.ModelViewSet):
         self.perform_update(serializer)
         return Response(serializer.data)
 
+
 class ReviewViewSet(viewsets.ModelViewSet):
     queryset = Review.objects.all()
     serializer_class = ReviewSerializer
@@ -126,7 +153,11 @@ class ReviewViewSet(viewsets.ModelViewSet):
         return self.queryset.filter(property_id=property_id)
 
     def perform_create(self, serializer):
+        property = serializer.validated_data['property']
+        if not Booking.objects.filter(property=property, user=self.request.user, end_date__lt=timezone.now()).exists():
+            raise serializers.ValidationError("You can only review properties you've stayed at.")
         serializer.save(user=self.request.user)
+
 
 class SearchHistoryViewSet(viewsets.ModelViewSet):
     queryset = SearchHistory.objects.all()
@@ -138,7 +169,6 @@ class SearchHistoryViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
-
 
 
 class PropertyViewViewSet(viewsets.ModelViewSet):

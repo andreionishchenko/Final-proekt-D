@@ -40,6 +40,8 @@ class Property(models.Model):
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    available = models.BooleanField(default=True)
+
 
     def __str__(self):
         return self.title
